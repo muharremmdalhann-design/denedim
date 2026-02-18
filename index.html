@@ -1,204 +1,195 @@
-
 <!DOCTYPE html>
 <html lang="tr">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Sen Gülümsersen Çiçekler Açar</title>
-
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sızıntı | Optical Flow & Particle System</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/p5.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api/dist/face-api.js"></script>
-
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&display=swap');
-
-        body {
-            margin: 0;
-            padding: 0;
-            overflow: hidden;
-            background: #000;
-            touch-action: none;
+        body { margin: 0; overflow: hidden; background: #000; cursor: crosshair; }
+        .interface {
+            position: absolute; top: 20px; left: 20px; z-index: 100;
+            background: rgba(0,0,0,0.85); padding: 20px; border-radius: 4px;
+            color: #00ffcc; font-family: 'Courier New', monospace;
+            border: 1px solid rgba(0, 255, 204, 0.3);
+            pointer-events: auto;
         }
-
-       #message{
-position:absolute;
-top:28%;
-width:100%;
-text-align:center;
-color: #FFD700;
-font-family: Arial, Helvetica, sans-serif;
-font-weight:700;
-font-size:4vw;   /* 👈 BURASI */
-line-height:1.2;
-text-shadow:0 0 15px rgba(255,255,0,0.9);
-z-index:10;
-pointer-events:none;
-}
-
+        .interface h2 { margin: 0 0 10px 0; font-size: 14px; letter-spacing: 2px; }
+        input[type="file"] { color: #fff; font-size: 12px; margin-top: 10px; }
+        .hint { font-size: 10px; color: #666; margin-top: 10px; }
     </style>
 </head>
+<body>
 
-<body onclick="if(video) video.elt.play()">
+    <div class="interface">
+        <h2>> OPTICAL_FLOW_v3</h2>
+        <input type="file" id="imgInput" accept="image/*">
+        <div class="hint">// Hareket hızı itme gücünü belirler.</div>
+    </div>
 
-<div id="message">
-SEN GÜLÜMSERSEN ÇİÇELER AÇAR... <br>
-HADİ GÜLÜMSE :)
-</div>
+    <script>
+        let video;
+        let prevImg;
+        let particles = [];
+        let userImg;
+        let imgLoaded = false;
+        let vScale = 4; // Analiz çözünürlüğü (performans için)
 
-<script>
+        function setup() {
+            createCanvas(windowWidth, windowHeight);
+            
+            // Kamera kurulumu
+            video = createCapture(VIDEO);
+            video.size(width / vScale, height / vScale);
+            video.hide();
 
-let video;
-let isModelLoaded = false;
-let isVideoReady = false;
+            // Önceki kareyi saklamak için buffer
+            prevImg = createImage(video.width, video.height);
 
-let flowers = [];
-const NUM_FLOWERS = 75;
+            // Başlangıç partikülleri
+            for (let i = 0; i < 120; i++) {
+                particles.push(new Particle());
+            }
 
-let currentJoy = 0;
-let targetJoy = 0;
-
-const ANALYSIS_INTERVAL = 200;
-
-async function setup() {
-    createCanvas(windowWidth, windowHeight);
-    colorMode(HSB, 360, 100, 100, 1);
-
-    for (let i = 0; i < NUM_FLOWERS; i++) {
-        flowers.push({
-            x: random(width),
-            y: random(height),
-            maxSize: random(50, 95),
-            hue: random(0, 360),
-            offX: random(20000),
-            offY: random(20000),
-            noiseSpeed: random(0.0003, 0.0007)
-        });
-    }
-
-    let constraints = {
-        video: {
-            facingMode: "user",
-            width: { ideal: 640 },
-            height: { ideal: 480 }
+            // Fotoğraf yükleme işlemi
+            document.getElementById('imgInput').addEventListener('change', function(e) {
+                let file = e.target.files[0];
+                if (file) {
+                    let reader = new FileReader();
+                    reader.onload = function(event) {
+                        userImg = loadImage(event.target.result, () => {
+                            imgLoaded = true;
+                        });
+                    }
+                    reader.readAsDataURL(file);
+                }
+            });
         }
-    };
 
-    video = createCapture(constraints, () => { 
-        isVideoReady = true; 
-        video.elt.setAttribute('playsinline', '');
-    });
-    video.size(640, 480);
-    video.hide();
+        function draw() {
+            background(0);
 
-    const MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model/';
-    await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
-    await faceapi.nets.faceExpressionNet.loadFromUri(MODEL_URL);
+            // 1. Arka Planda Kamerayı Çiz (Aynalanmış ve Tam Ekran)
+            push();
+            translate(width, 0);
+            scale(-1, 1);
+            tint(255, 80); // Seni biraz transparan yapalım
+            image(video, 0, 0, width, height);
+            pop();
 
-    isModelLoaded = true;
-    setInterval(analyzeFace, ANALYSIS_INTERVAL);
-}
+            video.loadPixels();
+            prevImg.loadPixels();
 
-function draw() {
-    background(0);
+            if (video.pixels.length > 0 && prevImg.pixels.length > 0) {
+                for (let p of particles) {
+                    p.applyGravity();
+                    
+                    // Partikülün koordinatını kamera çözünürlüğüne map'le
+                    let vx = floor(map(p.pos.x, 0, width, video.width, 0));
+                    let vy = floor(map(p.pos.y, 0, height, 0, video.height));
 
-   // 🎥 TAM EKRAN COVER (Gerçek çözünürlükle)
-if (isVideoReady && video.elt.videoWidth > 0) {
+                    if (vx > 0 && vx < video.width && vy > 0 && vy < video.height) {
+                        let index = (vx + vy * video.width) * 4;
+                        
+                        // İki kare arasındaki fark (Hareket şiddeti)
+                        let diff = abs(video.pixels[index] - prevImg.pixels[index]);
 
-    push();
+                        if (diff > 40) { // Hareket eşiği
+                            // Çevredeki gradient (Yön tayini)
+                            let nx = (vx + 1 + vy * video.width) * 4;
+                            let ny = (vx + (vy + 1) * video.width) * 4;
+                            
+                            let dx = video.pixels[nx] - video.pixels[index];
+                            let dy = video.pixels[ny] - video.pixels[index];
+                            
+                            let flowV = createVector(dx, dy);
+                            flowV.normalize();
+                            
+                            // ORGANİK İTME GÜCÜ (Hareket şiddetiyle orantılı)
+                            let pushStrength = map(diff, 40, 255, 15, 60); 
+                            flowV.mult(-pushStrength); // Etki-tepki için ters yön
+                            
+                            p.applyForce(flowV);
+                            p.rotationSpeed += random(-0.2, 0.2);
+                        }
+                    }
 
-    translate(width, 0);
-    scale(-1, 1);
+                    p.update();
+                    p.display();
+                }
+            }
 
-    let vw = video.elt.videoWidth;
-    let vh = video.elt.videoHeight;
-
-    let canvasRatio = width / height;
-    let videoRatio = vw / vh;
-
-    let drawWidth, drawHeight;
-
-    if (videoRatio > canvasRatio) {
-        // Video daha geniş → yanlardan kırp
-        drawHeight = height;
-        drawWidth = height * videoRatio;
-    } else {
-        // Video daha uzun → üst-alt kırp
-        drawWidth = width;
-        drawHeight = width / videoRatio;
-    }
-
-    image(video, 
-        (width - drawWidth) / 2,
-        (height - drawHeight) / 2,
-        drawWidth,
-        drawHeight
-    );
-
-    pop();
-}
-
-
-    fill(0, 0, 0, 0.75);
-    rect(0, 0, width, height);
-
-    currentJoy = lerp(currentJoy, targetJoy, 0.05);
-
-    for (let f of flowers) {
-        f.x += map(noise(f.offX), 0, 1, -0.6, 0.6);
-        f.y += map(noise(f.offY), 0, 1, -0.6, 0.6);
-        f.offX += f.noiseSpeed;
-        f.offY += f.noiseSpeed;
-
-        if (f.x < -100) f.x = width + 100;
-        if (f.x > width + 100) f.x = -100;
-        if (f.y < -100) f.y = height + 100;
-        if (f.y > height + 100) f.y = -100;
-
-        drawMorphingFlower(f.x, f.y, f.maxSize, f.hue, currentJoy);
-    }
-}
-
-async function analyzeFace() {
-    if (!isModelLoaded || !isVideoReady) return;
-    const detections = await faceapi.detectAllFaces(video.elt, new faceapi.TinyFaceDetectorOptions()).withFaceExpressions();
-
-    if (detections && detections.length > 0) {
-        let joyValue = detections[0].expressions.happy;
-        if (abs(joyValue - targetJoy) > 0.08) targetJoy = joyValue;
-    } else {
-        targetJoy = 0;
-    }
-}
-
-function drawMorphingFlower(x, y, maxSize, h, joy) {
-    push();
-    translate(x, y);
-    noStroke();
-
-    let currentCenter = map(joy, 0, 1, 1, maxSize * 0.25);
-    let brightness = map(joy, 0, 1, 40, 100);
-    let alpha = 0.8;
-
-    fill(h, 80, brightness, alpha);
-    ellipse(0, 0, currentCenter, currentCenter);
-
-    if (joy > 0.08) {
-        let openDist = map(joy, 0.08, 1, 0, maxSize * 0.25);
-        let petalW = map(joy, 0.08, 1, 0, maxSize * 0.43);
-        let petalH = map(joy, 0.08, 1, 0, maxSize * 0.2);
-        fill(h, 50, brightness, alpha * 0.7);
-        for (let i = 0; i < 6; i++) {
-            rotate(PI / 3);
-            ellipse(openDist, 0, petalW, petalH);
+            // Mevcut kareyi bir sonraki döngü için sakla
+            prevImg.copy(video, 0, 0, video.width, video.height, 0, 0, video.width, video.height);
         }
-    }
-    pop();
-}
 
-function windowResized() {
-    resizeCanvas(windowWidth, windowHeight);
-}
+        class Particle {
+            constructor() {
+                this.init(true);
+            }
 
-</script>
+            init(firstTime = false) {
+                this.pos = createVector(random(width), firstTime ? random(-height, 0) : -100);
+                this.vel = createVector(random(-1, 1), random(2, 5));
+                this.acc = createVector(0, 0);
+                this.size = random(40, 90);
+                this.angle = random(TWO_PI);
+                this.rotationSpeed = random(-0.02, 0.02);
+            }
+
+            applyForce(f) {
+                this.acc.add(f);
+            }
+
+            applyGravity() {
+                this.acc.add(createVector(0, 0.15));
+            }
+
+            update() {
+                this.vel.add(this.acc);
+                this.pos.add(this.vel);
+                this.acc.mult(0);
+                
+                // Sürtünme: Havada süzülme hissi verir
+                this.vel.mult(0.97); 
+                
+                // Dönüşü güncelle
+                this.angle += this.rotationSpeed;
+                this.rotationSpeed *= 0.95;
+
+                // Ekrandan çıkarsa (alt, sağ veya sol) yeniden canlandır
+                if (this.pos.y > height + 100 || this.pos.x < -200 || this.pos.x > width + 200) {
+                    this.init();
+                }
+            }
+
+            display() {
+                push();
+                translate(this.pos.x, this.pos.y);
+                rotate(this.angle);
+                
+                if (imgLoaded) {
+                    imageMode(CENTER);
+                    image(userImg, 0, 0, this.size, this.size);
+                } else {
+                    // Fotoğraf yoksa teknolojik bir placeholder
+                    rectMode(CENTER);
+                    noFill();
+                    stroke(0, 255, 204, 150);
+                    strokeWeight(2);
+                    rect(0, 0, this.size * 0.6, this.size * 0.6);
+                    fill(0, 255, 204, 50);
+                    rect(0, 0, this.size * 0.3, this.size * 0.3);
+                }
+                pop();
+            }
+        }
+
+        function windowResized() {
+            resizeCanvas(windowWidth, windowHeight);
+            video.size(width / vScale, height / vScale);
+            prevImg = createImage(video.width, video.height);
+        }
+    </script>
 </body>
 </html>
